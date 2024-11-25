@@ -1,0 +1,7 @@
+[project]
+name = "itg-buddy-py"
+version = "0.1.0"
+description = "A discord bot for Dance Games at Berkeley"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
