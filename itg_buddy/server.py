@@ -1,6 +1,7 @@
-import discord
 import os
+from discord.utils import setup_logging
 from dotenv import load_dotenv
+from itg_buddy.bot import ItgBuddy
 
 
 def main():
@@ -11,7 +12,9 @@ def main():
         print("Discord API Key not found.")
         print("Please set the DISCORD_API_KEY or include it in a .env file")
         exit(1)
-    print(discord_key)
+    setup_logging()
+    bot = ItgBuddy()
+    bot.run(discord_key, log_handler=None)
 
 
 if __name__ == "__main__":
