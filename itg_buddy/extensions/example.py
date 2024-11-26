@@ -29,7 +29,7 @@ class ExampleCog(commands.Cog):
     # https://about.abstractumbra.dev/discord.py/2023/01/29/sync-command-example.html
     @commands.command()
     @commands.guild_only()
-    @commands.is_owner()
+    @commands.has_permissions(administrator=True)
     async def sync(
         self,
         ctx: commands.Context,
