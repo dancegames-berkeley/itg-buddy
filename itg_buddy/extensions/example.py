@@ -2,6 +2,7 @@ import logging
 import discord
 from discord.ext import commands
 from discord import app_commands
+from typing import Literal, Optional
 
 
 class ExampleCog(commands.Cog):
@@ -15,44 +16,53 @@ class ExampleCog(commands.Cog):
         )
         self.bot = bot
 
-    @commands.hybrid_command()
-    async def register(
-        self, ctx: commands.Context, global_flag: bool = False
-    ) -> None:
-        """
-        Registers slash commands with Discord
-
-        Parameters
-        ----------
-        ctx: commands.Context
-            The context of the command invocation
-        global_flag: bool
-            Registers commands globally if True, or the current guild if False
-        """
-        if global_flag:
-            await self.bot.tree.sync()
-            await ctx.reply(
-                "> Registered commands globally.\n"
-                + "> Please allow some time for the changes to propgate."
-            )
-            self.logger.info(f"register: Registered commands globally")
-        else:
-            await self.bot.tree.sync(guild=ctx.guild)
-            await ctx.reply(f"> Registered commands for {ctx.guild.name}.")
-            self.logger.info(
-                f"register: Registered commands for {ctx.guild.name}."
-            )
-
-    @app_commands.command()
+    @app_commands.command(
+        name="ping",
+        description="Responds with pong and the latency of the bot.",
+    )
     async def ping(self, inter: discord.Interaction) -> None:
-        """
-        Responds with pong and the latency of the bot.
-
-        Parameters
-        ----------
-        inter: discord.Interaction
-            The slash-command interaction
-        """
         latency = round(inter.client.latency * 1000)
-        await inter.response.send_message(f"> pong! `{latency}ms`")
+        await inter.response.send_message(f"pong! `{latency}ms`")
         self.logger.info(f"ping: Sent pong ({latency}ms)")
+
+    # Adapted from discord.py devpost
+    # https://about.abstractumbra.dev/discord.py/2023/01/29/sync-command-example.html
+    @commands.command()
+    @commands.guild_only()
+    @commands.is_owner()
+    async def sync(
+        self,
+        ctx: commands.Context,
+        guilds: commands.Greedy[discord.Object],
+        spec: Optional[Literal["~", "*", "^"]] = None,
+    ) -> None:
+        if not guilds:
+            if spec == "~":
+                synced = await ctx.bot.tree.sync(guild=ctx.guild)
+            elif spec == "*":
+                ctx.bot.tree.copy_global_to(guild=ctx.guild)
+                synced = await ctx.bot.tree.sync(guild=ctx.guild)
+            elif spec == "^":
+                ctx.bot.tree.clear_commands(guild=ctx.guild)
+                await ctx.bot.tree.sync(guild=ctx.guild)
+                synced = []
+            else:
+                synced = await ctx.bot.tree.sync()
+
+            scope = "globally" if spec is None else "to the current guild."
+            msg = f"Synced {len(synced)} commands {scope}"
+            await ctx.send(msg)
+            self.logger.info(msg)
+
+            return
+
+        ret = 0
+        for guild in guilds:
+            try:
+                await ctx.bot.tree.sync(guild=guild)
+            except discord.HTTPException:
+                pass
+            else:
+                ret += 1
+
+        await ctx.send(f"Synced the tree to {ret}/{len(guilds)}.")
