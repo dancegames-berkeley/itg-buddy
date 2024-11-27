@@ -1,42 +1,73 @@
-from operator import add
 import discord
 import itg_cli
 import logging
+import os
+from dataclasses import dataclass
 from simfile.dir import SimfilePack
 from simfile.types import Simfile
 from discord.ext import commands
 from discord import app_commands
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Self
 
 
-class ItgCliCommands(commands.Cog):
-    bot: commands.Bot
+class ItgCliCogConfigError(Exception):
+    pass
+
+
+@dataclass
+class ItgCliCogConfig:
+    """Config Options for ItgCliCog"""
+
     packs: Path
     courses: Path
     singles: Path
     cache: Optional[Path]
     add_song_channel_id: Optional[int]
+
+    def from_env() -> Optional[Self]:
+        logger = logging.getLogger(__class__.__name__)
+        env_bindings = {
+            key: os.getenv(key)
+            for key in [
+                "PACKS_PATH",
+                "COURSES_PATH",
+                "SINGLES_FOLDER_NAME",
+                "ITGMANIA_CACHE_PATH",
+                "ADD_SONG_CHANNEL_ID",
+            ]
+        }
+        missing = [key for key, val in env_bindings.items() if not val]
+        for key in missing:
+            logger.warning(
+                f"Missing necessary environment variable for ItgCliCog: {key}"
+            )
+        if len(missing) > 0:
+            raise ItgCliCogConfigError("Missing keys.")
+
+        return ItgCliCogConfig(
+            Path(env_bindings["PACKS_PATH"]),
+            Path(env_bindings["COURSES_PATH"]),
+            env_bindings["SINGLES_FOLDER_NAME"],
+            Path(env_bindings["ITGMANIA_CACHE_PATH"]),
+            env_bindings["ADD_SONG_CHANNEL_ID"],
+        )
+
+
+class ItgCliCog(commands.Cog):
+    bot: commands.Bot
     logger: logging.Logger
+    config: ItgCliCogConfig
 
     def __init__(
         self,
         bot: commands.Bot,
-        packs: Path,
-        courses: Path,
-        singles: str,
-        cache: Optional[Path] = None,
-        add_song_channel_id: Optional[int] = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.bot = bot
-        self.packs = packs
-        self.courses = courses
-        self.singles = packs.join(singles)
-        self.cache = cache
-        self.add_song_channel_id = add_song_channel_id
+        self.config = ItgCliCogConfig.from_env()
         self.logger = self.logger = logging.getLogger(
             f"{bot.__class__.__name__}.{self.__class__.__name__}"
         )
@@ -60,8 +91,8 @@ class ItgCliCommands(commands.Cog):
         try:
             pack, num_courses = itg_cli.add_pack(
                 link,
-                self.packs,
-                self.courses,
+                self.config.packs,
+                self.config.courses,
                 overwrite=overwrite_handler,
                 delete_macos_files_flag=True,
             )
@@ -90,7 +121,7 @@ class ItgCliCommands(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, msg: discord.Message) -> None:
-        if msg.channel.id != self.add_song_channel_id:
+        if msg.channel.id != self.config.add_song_channel_id:
             return
         zips = filter(
             lambda a: a.content_type == "application/zip", msg.attachments
@@ -117,8 +148,8 @@ class ItgCliCommands(commands.Cog):
         try:
             sm, _ = itg_cli.add_song(
                 link,
-                self.singles,
-                self.cache,
+                self.config.singles,
+                self.config.cache,
                 overwrite=overwrite_handler,
                 delete_macos_files_flag=True,
             )
