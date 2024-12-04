@@ -1,3 +1,5 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import discord
 import itg_cli
 import logging
@@ -48,7 +50,9 @@ class ItgCliCogConfig:
         return ItgCliCogConfig(
             Path(env_bindings["PACKS_PATH"]),
             Path(env_bindings["COURSES_PATH"]),
-            env_bindings["SINGLES_FOLDER_NAME"],
+            Path(env_bindings["PACKS_PATH"]).joinpath(
+                env_bindings["SINGLES_FOLDER_NAME"]
+            ),
             Path(env_bindings["ITGMANIA_CACHE_PATH"]),
             env_bindings["ADD_SONG_CHANNEL_ID"],
         )
@@ -79,35 +83,31 @@ class ItgCliCog(commands.Cog):
         inter: discord.Interaction,
         link: str,
     ):
-        # Define overwrite handler for add_pack
-        # TODO: make this more pretty with buttons and stuff
-        # Maybe genericize it for both add_song and add_pack?
-        # Will need to handle arg type differences
-        def overwrite_handler(_new: SimfilePack, _old: SimfilePack) -> bool:
-            inter.response.send_message("Pack already exists. Aborting.")
-            return False
+        # Start by deferring the interaction
+        await inter.response.defer(thinking=True)
 
         # Run add_pack and handle exceptions accordingly
         try:
-            pack, num_courses = itg_cli.add_pack(
+            pack, num_courses = await add_pack_async(
                 link,
                 self.config.packs,
                 self.config.courses,
-                overwrite=overwrite_handler,
+                overwrite=get_add_pack_overwrite_handler(
+                    inter, asyncio.get_running_loop()
+                ),
                 delete_macos_files_flag=True,
             )
         except itg_cli.OverwriteException:
             return
         except Exception as e:
-            # TODO: maybe convert this into an exception handler for the cog?
-            inter.response.send_message(
-                f"add_pack threw an exception: `{type(e)}`\n`{e.args}`"
+            await inter.edit_original_response(
+                content=f"add_pack threw an exception: `{type(e)}`\n`{e.args}`"
             )
             return
 
         # Send result message on success
-        inter.response.send_message(
-            f"Added {pack.name} with {num_courses} course(s)."
+        await inter.edit_original_response(
+            content=f"Added {pack.name} with {num_courses} course(s)."
         )
 
     @app_commands.command(description="Add a song to Berkeley Test Bench.")
@@ -132,54 +132,127 @@ class ItgCliCog(commands.Cog):
     async def _add_song_helper(
         self, inter_or_msg: discord.Interaction | discord.Message, link: str
     ):
-        # Define overwrite handler for add_song
-        # TODO: make this more pretty with buttons and stuff
-        # Maybe genericize it for both add_song and add_pack?
-        # Will need to handle arg type differences
-        async def overwrite_handler(
-            _new: tuple[Simfile, str], _old: tuple[Simfile, str]
-        ) -> bool:
-            await self.inter_or_msg_reply(
-                inter_or_msg, "Song already exists. Aborting."
-            )
-            return False
+        # Send "thinking" message
+        if isinstance(inter_or_msg, discord.Interaction):
+            await inter_or_msg.response.defer(thinking=True)
+        elif isinstance(inter_or_msg, discord.Message):
+            inter_or_msg = await inter_or_msg.reply("Processing command...")
 
         # Run add_song and handle exceptions accordingly
         try:
-            sm, _ = itg_cli.add_song(
+            sm, _ = await add_song_async(
                 link,
                 self.config.singles,
                 self.config.cache,
-                overwrite=overwrite_handler,
+                overwrite=get_add_song_overwrite_handler(
+                    inter_or_msg, asyncio.get_running_loop()
+                ),
                 delete_macos_files_flag=True,
             )
         except itg_cli.OverwriteException:
             return
         except Exception as e:
-            # TODO: maybe convert this into an exception handler for the cog?
-            await self.inter_or_msg_reply(
+            await edit_response(
                 inter_or_msg,
                 f"add_song threw an exception: `{type(e)}`\n`{e.args}`",
             )
             return
 
         # Send result message on success
-        await self.inter_or_msg_reply(
+        await edit_response(
             inter_or_msg, f"Added {sm.title} to Berkeley Test Bench."
         )
 
-    async def inter_or_msg_reply(
-        self,
-        inter_or_msg: discord.Interaction | discord.Message,
-        content: str,
-        inter_response_kwargs: dict = {},
-        msg_reply_kwargs: dict = {},
-    ):
-        if isinstance(inter_or_msg, discord.Interaction):
-            await inter_or_msg.response.send_message(
-                content, **inter_response_kwargs
-            )
-        elif isinstance(inter_or_msg, discord.Message):
-            await inter_or_msg.reply(content, **msg_reply_kwargs)
-        else:
-            raise ValueError("inter_or_msg is not Interaction or Message")
+
+async def edit_response(
+    inter_or_msg: discord.Interaction | discord.Message,
+    content: str,
+):
+    if isinstance(inter_or_msg, discord.Interaction):
+        await inter_or_msg.edit_original_response(content=content)
+    elif isinstance(inter_or_msg, discord.Message):
+        await inter_or_msg.edit(content=content)
+    else:
+        raise ValueError("inter_or_msg is not Interaction or Message")
+
+
+# Async Wrappers
+
+# Thread pools for performing add-song and add-pack operations.
+# itg-cli wasn't built with concurrency in mind, so max_workers=1 (for now)
+ADD_SONG_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+ADD_PACK_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+
+def get_add_pack_overwrite_handler(
+    inter: discord.Interaction, loop: asyncio.AbstractEventLoop
+):
+    def overwrite_handler(_new: SimfilePack, _old: SimfilePack) -> bool:
+        asyncio.run_coroutine_threadsafe(
+            inter.edit_original_response(
+                content="Pack already exists. Aborting."
+            ),
+            loop,
+        )
+        return False
+
+    return overwrite_handler
+
+
+def get_add_song_overwrite_handler(
+    inter_or_msg: discord.Interaction | discord.Message,
+    loop: asyncio.AbstractEventLoop,
+):
+    def overwrite_handler(
+        _new: tuple[Simfile, str], _old: tuple[Simfile, str]
+    ) -> bool:
+        asyncio.run_coroutine_threadsafe(
+            edit_response(inter_or_msg, "Song already exists. Aborting."), loop
+        )
+        return False
+
+    return overwrite_handler
+
+
+async def add_song_async(
+    path_or_url: str,
+    singles: Path,
+    cache: Path | None = None,
+    downloads: Path | None = None,
+    overwrite=lambda _new, _old: False,
+    delete_macos_files_flag: bool = False,
+):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        ADD_SONG_EXECUTOR,
+        lambda: itg_cli.add_song(
+            path_or_url,
+            singles,
+            cache,
+            downloads=downloads,
+            overwrite=overwrite,
+            delete_macos_files_flag=delete_macos_files_flag,
+        ),
+    )
+
+
+async def add_pack_async(
+    path_or_url: str,
+    packs: Path,
+    courses: Path,
+    downloads: Path | None = None,
+    overwrite=lambda _new, _old: False,
+    delete_macos_files_flag: bool = False,
+):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        ADD_PACK_EXECUTOR,
+        lambda: itg_cli.add_pack(
+            path_or_url,
+            packs,
+            courses,
+            downloads=downloads,
+            overwrite=overwrite,
+            delete_macos_files_flag=delete_macos_files_flag,
+        ),
+    )
