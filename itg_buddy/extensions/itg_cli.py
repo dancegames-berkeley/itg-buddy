@@ -1,5 +1,9 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from io import TextIOBase
+import sys
+import time
 import discord
 import itg_cli
 import logging
@@ -10,7 +14,7 @@ from simfile.types import Simfile
 from discord.ext import commands
 from discord import app_commands
 from pathlib import Path
-from typing import Optional, Self
+from typing import Optional, Self, override
 
 
 class ItgCliCogConfigError(Exception):
@@ -92,6 +96,7 @@ class ItgCliCog(commands.Cog):
                 link,
                 self.config.packs,
                 self.config.courses,
+                inter,
                 overwrite=get_add_pack_overwrite_handler(
                     inter, asyncio.get_running_loop()
                 ),
@@ -143,7 +148,8 @@ class ItgCliCog(commands.Cog):
             sm, _ = await add_song_async(
                 link,
                 self.config.singles,
-                self.config.cache,
+                inter_or_msg,
+                cache=self.config.cache,
                 overwrite=get_add_song_overwrite_handler(
                     inter_or_msg, asyncio.get_running_loop()
                 ),
@@ -214,45 +220,113 @@ def get_add_song_overwrite_handler(
     return overwrite_handler
 
 
+# Async wrapper around itg_cli.add_song
+# Takes an additional argument, bot_response, for posting updates from stderr
 async def add_song_async(
     path_or_url: str,
     singles: Path,
+    bot_response: discord.Message | discord.Interaction,
     cache: Path | None = None,
     downloads: Path | None = None,
     overwrite=lambda _new, _old: False,
     delete_macos_files_flag: bool = False,
 ):
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        ADD_SONG_EXECUTOR,
-        lambda: itg_cli.add_song(
-            path_or_url,
-            singles,
-            cache,
-            downloads=downloads,
-            overwrite=overwrite,
-            delete_macos_files_flag=delete_macos_files_flag,
-        ),
-    )
+    with edit_response_with_stderr(bot_response, loop):
+        return await loop.run_in_executor(
+            ADD_SONG_EXECUTOR,
+            lambda: itg_cli.add_song(
+                path_or_url,
+                singles,
+                cache,
+                downloads=downloads,
+                overwrite=overwrite,
+                delete_macos_files_flag=delete_macos_files_flag,
+            ),
+        )
 
 
+# Async wrapper around itg_cli.add_pack
+# Takes an additional argument, bot_response, for posting updates from stderr
 async def add_pack_async(
     path_or_url: str,
     packs: Path,
     courses: Path,
+    bot_response: discord.Message | discord.Interaction,
     downloads: Path | None = None,
     overwrite=lambda _new, _old: False,
     delete_macos_files_flag: bool = False,
 ):
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        ADD_PACK_EXECUTOR,
-        lambda: itg_cli.add_pack(
-            path_or_url,
-            packs,
-            courses,
-            downloads=downloads,
-            overwrite=overwrite,
-            delete_macos_files_flag=delete_macos_files_flag,
-        ),
-    )
+    with edit_response_with_stderr(bot_response, loop):
+        return await loop.run_in_executor(
+            ADD_PACK_EXECUTOR,
+            lambda: itg_cli.add_pack(
+                path_or_url,
+                packs,
+                courses,
+                downloads=downloads,
+                overwrite=overwrite,
+                delete_macos_files_flag=delete_macos_files_flag,
+            ),
+        )
+
+
+# Stderr redirection stuff
+# Progress bars in itg_cli are written to stderr, so we can instead pipe stderr
+# updates to a custom handler that regularly updates our bot's responses with
+# the current progress.
+class ItgCliStdOutHandler(TextIOBase):
+    inter_or_msg: discord.Message | discord.Interaction
+    last_updated: float
+    buffer: str
+    loop: asyncio.AbstractEventLoop
+
+    def __init__(
+        self,
+        inter_or_msg: discord.Message | discord.Interaction,
+        loop: asyncio.AbstractEventLoop,
+    ):
+        super().__init__()
+        self.inter_or_msg = inter_or_msg
+        self.loop = loop
+        self.buffer = ""
+        self.last_updated = 0
+
+    @property
+    def encoding(self):
+        return sys.stdout.encoding
+
+    @override
+    def write(self, text: str):
+        self.buffer += (
+            text  # I think this is quite slow in Python, but I'm not sure
+        )
+        return len(text)
+
+    @override
+    def flush(self):
+        now = time.time()
+        if 1 + self.last_updated < now:
+            self.last_updated = now
+            asyncio.run_coroutine_threadsafe(
+                edit_response(
+                    self.inter_or_msg, f"```{self.buffer.strip()}```"
+                ),
+                self.loop,
+            )
+        self.buffer = ""
+
+
+@contextmanager
+def edit_response_with_stderr(
+    inter_or_msg: discord.Message | discord.Interaction,
+    loop: asyncio.AbstractEventLoop,
+):
+    original_stderr = sys.stderr
+    custom_stderr = ItgCliStdOutHandler(inter_or_msg, loop)
+    sys.stderr = custom_stderr
+    try:
+        yield
+    finally:
+        sys.stderr = original_stderr
