@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import datetime
 from io import TextIOBase
 import sys
 import time
@@ -8,6 +9,7 @@ import discord
 import itg_cli
 import logging
 import os
+import re
 from dataclasses import dataclass
 from simfile.dir import SimfilePack
 from simfile.types import Simfile
@@ -92,7 +94,7 @@ class ItgCliCog(commands.Cog):
 
         # Run add_pack and handle exceptions accordingly
         try:
-            pack, num_courses = await add_pack_async(
+            pack, _num_courses = await add_pack_async(
                 link,
                 self.config.packs,
                 self.config.courses,
@@ -105,15 +107,14 @@ class ItgCliCog(commands.Cog):
         except itg_cli.OverwriteException:
             return
         except Exception as e:
-            await inter.edit_original_response(
-                content=f"add_pack threw an exception: `{type(e)}`\n`{e.args}`"
-            )
+            self.logger.exception(f"add_song threw an exception")
+            await inter.edit_original_response(embed=error_embed(e))
             return
 
         # Send result message on success
-        await inter.edit_original_response(
-            content=f"Added {pack.name} with {num_courses} course(s)."
-        )
+        embed, file = add_pack_success(pack, inter.user)
+        await inter.delete_original_response()
+        await inter.channel.send(embed=embed, file=file)
 
     @app_commands.command(description="Add a song to Berkeley Test Bench.")
     @app_commands.describe(link="Link to the song to add")
@@ -145,7 +146,7 @@ class ItgCliCog(commands.Cog):
 
         # Run add_song and handle exceptions accordingly
         try:
-            sm, _ = await add_song_async(
+            sf, path = await add_song_async(
                 link,
                 self.config.singles,
                 inter_or_msg,
@@ -158,26 +159,31 @@ class ItgCliCog(commands.Cog):
         except itg_cli.OverwriteException:
             return
         except Exception as e:
+            self.logger.exception(f"add_song threw an exception")
             await edit_response(
                 inter_or_msg,
-                f"add_song threw an exception: `{type(e)}`\n`{e.args}`",
+                embed=error_embed(e),
             )
             return
 
-        # Send result message on success
-        await edit_response(
-            inter_or_msg, f"Added {sm.title} to Berkeley Test Bench."
-        )
+        embed, file = add_song_success(sf, path, inter_or_msg.user)
+        channel = inter_or_msg.channel
+        # Delete progress message and send success message
+        if isinstance(inter_or_msg, discord.Interaction):
+            await inter_or_msg.delete_original_response()
+            await inter_or_msg.channel.send(embed=embed, file=file)
+        elif isinstance(inter_or_msg, discord.Message):
+            await inter_or_msg.delete()
+            await channel.send(embed=embed, file=file)
 
 
 async def edit_response(
-    inter_or_msg: discord.Interaction | discord.Message,
-    content: str,
+    inter_or_msg: discord.Interaction | discord.Message, **kwargs
 ):
     if isinstance(inter_or_msg, discord.Interaction):
-        await inter_or_msg.edit_original_response(content=content)
+        await inter_or_msg.edit_original_response(**kwargs)
     elif isinstance(inter_or_msg, discord.Message):
-        await inter_or_msg.edit(content=content)
+        await inter_or_msg.edit(**kwargs)
     else:
         raise ValueError("inter_or_msg is not Interaction or Message")
 
@@ -185,7 +191,8 @@ async def edit_response(
 # Async Wrappers
 
 # Thread pools for performing add-song and add-pack operations.
-# itg-cli wasn't built with concurrency in mind, so max_workers=1 (for now)
+# itg-cli wasn't built with concurrency in mind, so max_workers=1 (i.e. add_song
+# and add_pack operations are handled in a queue)
 ADD_SONG_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 ADD_PACK_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
@@ -196,7 +203,7 @@ def get_add_pack_overwrite_handler(
     def overwrite_handler(_new: SimfilePack, _old: SimfilePack) -> bool:
         asyncio.run_coroutine_threadsafe(
             inter.edit_original_response(
-                content="Pack already exists. Aborting."
+                content="Pack already exists. Aborting.", embed=None
             ),
             loop,
         )
@@ -213,7 +220,12 @@ def get_add_song_overwrite_handler(
         _new: tuple[Simfile, str], _old: tuple[Simfile, str]
     ) -> bool:
         asyncio.run_coroutine_threadsafe(
-            edit_response(inter_or_msg, "Song already exists. Aborting."), loop
+            edit_response(
+                inter_or_msg,
+                content="Song already exists. Aborting.",
+                embed=None,
+            ),
+            loop,
         )
         return False
 
@@ -230,7 +242,7 @@ async def add_song_async(
     downloads: Path | None = None,
     overwrite=lambda _new, _old: False,
     delete_macos_files_flag: bool = False,
-):
+) -> tuple[Simfile, str]:
     loop = asyncio.get_running_loop()
     with edit_response_with_stderr(bot_response, loop):
         return await loop.run_in_executor(
@@ -299,19 +311,22 @@ class ItgCliStdOutHandler(TextIOBase):
 
     @override
     def write(self, text: str):
-        self.buffer += (
-            text  # I think this is quite slow in Python, but I'm not sure
-        )
+        self.buffer += text
         return len(text)
 
     @override
     def flush(self):
         now = time.time()
-        if 1 + self.last_updated < now:
+        # Post an update only if
+        #   It's been at least 1 second since our last update
+        #   Our string contains 1-3 digits followed by %
+        if 1 + self.last_updated < now and re.search(
+            r"[0-9]{1,3}%", self.buffer
+        ):
             self.last_updated = now
             asyncio.run_coroutine_threadsafe(
                 edit_response(
-                    self.inter_or_msg, f"```{self.buffer.strip()}```"
+                    self.inter_or_msg, embed=progress_embed(self.buffer)
                 ),
                 self.loop,
             )
@@ -330,3 +345,94 @@ def edit_response_with_stderr(
         yield
     finally:
         sys.stderr = original_stderr
+
+
+# Embed Templates
+BERKELEY_BLUE = discord.Color.from_str("#002676")
+CALIFORNIA_GOLD = discord.Color.from_str("#FDB515")
+
+
+def progress_embed(progress_text: str) -> discord.Embed:
+    return discord.Embed(
+        title="Downloading...",
+        description=f"```{progress_text}```",
+        color=CALIFORNIA_GOLD,
+        timestamp=datetime.datetime.fromtimestamp(time.time()),
+    )
+
+
+def error_embed(e: Exception) -> discord.Embed:
+    return discord.Embed(
+        title="An Error Occurred",
+        description=f"```{e}```",
+        color=discord.Color.red(),
+    )
+
+
+def add_song_success(
+    sf: Simfile, path: str, user: discord.User
+) -> tuple[discord.Embed, Optional[discord.File]]:
+    banner_path = None
+    singles_pack = SimfilePack(Path(path).parents[1])
+    if sf.banner:
+        banner_path = Path(path).parent.joinpath(sf.banner)
+    elif singles_pack.banner():
+        banner_path = singles_pack.banner()
+    embed = discord.Embed(
+        title=f"Added {sf.title} to {singles_pack.name}",
+        description=f"added by <@{user.id}>",
+        color=BERKELEY_BLUE,
+        timestamp=datetime.datetime.fromtimestamp(time.time()),
+    )
+    embed.add_field(name="Title", value=sf.title)
+    embed.add_field(name="Artist", value=sf.artist)
+    embed.add_field(
+        name="Charts",
+        value="\n".join(
+            [f"**[{c.meter}]** {c.description}" for c in sf.charts]
+        ),
+        inline=False,
+    )
+    if banner_path:
+        embed.set_image(url=f"attachment://{sf.banner}")
+        return (embed, discord.File(banner_path, filename=sf.banner))
+    else:
+        return (embed, None)
+
+
+def add_pack_success(
+    pack: SimfilePack, user: discord.User
+) -> tuple[discord.Embed, Optional[discord.File]]:
+    embed = discord.Embed(
+        title=f"Added {pack.name}",
+        description=f"added by <@{user.id}>",
+        color=BERKELEY_BLUE,
+        timestamp=datetime.datetime.fromtimestamp(time.time()),
+    )
+    simfile_strings = [
+        f"**{[int(c.meter) for c in sf.charts]}** {sf.title}"
+        for sf in sorted(
+            list(pack.simfiles(strict=False)),
+            key=lambda sf: sf.titletranslit or sf.title,
+        )
+    ]
+    simfile_list = ""
+    for i, line in enumerate(simfile_strings):
+        if len(simfile_list) + len(line) > 1000:  # Real limit is 1024
+            simfile_list = (
+                simfile_list + f"And {len(simfile_strings) - i} more..."
+            )
+            break
+        else:
+            simfile_list += f"{line}\n"
+
+    embed.add_field(
+        name=f"Contains {len(simfile_strings)} songs", value=simfile_list
+    )
+
+    if pack.banner():
+        banner_name = Path(pack.banner()).name
+        embed.set_image(url=f"attachment://{banner_name}")
+        return (embed, discord.File(pack.banner(), filename=banner_name))
+    else:
+        return (embed, None)
