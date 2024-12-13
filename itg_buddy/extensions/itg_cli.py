@@ -105,10 +105,13 @@ class ItgCliCog(commands.Cog):
                 delete_macos_files_flag=True,
             )
         except itg_cli.OverwriteException:
+            await inter.edit_original_response(
+                embed=cancelled_embed(), view=None
+            )
             return
         except Exception as e:
             self.logger.exception(f"add_song threw an exception")
-            await inter.edit_original_response(embed=error_embed(e))
+            await inter.edit_original_response(embed=error_embed(e), view=None)
             return
 
         # Send result message on success
@@ -138,10 +141,12 @@ class ItgCliCog(commands.Cog):
     async def _add_song_helper(
         self, inter_or_msg: discord.Interaction | discord.Message, link: str
     ):
-        # Send "thinking" message
+        # Store the user of the original message and send "thinking" message
         if isinstance(inter_or_msg, discord.Interaction):
+            user = inter_or_msg.user
             await inter_or_msg.response.defer(thinking=True)
         elif isinstance(inter_or_msg, discord.Message):
+            user = inter_or_msg.author
             inter_or_msg = await inter_or_msg.reply("Processing command...")
 
         # Run add_song and handle exceptions accordingly
@@ -152,11 +157,14 @@ class ItgCliCog(commands.Cog):
                 inter_or_msg,
                 cache=self.config.cache,
                 overwrite=get_add_song_overwrite_handler(
-                    inter_or_msg, asyncio.get_running_loop()
+                    inter_or_msg, user, asyncio.get_running_loop()
                 ),
                 delete_macos_files_flag=True,
             )
         except itg_cli.OverwriteException:
+            await edit_response(
+                inter_or_msg, embed=cancelled_embed(), view=None
+            )
             return
         except Exception as e:
             self.logger.exception(f"add_song threw an exception")
@@ -188,48 +196,117 @@ async def edit_response(
         raise ValueError("inter_or_msg is not Interaction or Message")
 
 
-# Async Wrappers
+# Overwrite Button View
+class OverwriteView(discord.ui.View):
+    choice: asyncio.Future[bool]
+    parent: discord.Interaction | discord.Message
+    user: discord.User
+
+    def __init__(
+        self,
+        user: discord.User,
+        parent: discord.Interaction | discord.Message,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, timeout=60, **kwargs)
+        self.choice = asyncio.get_running_loop().create_future()
+        self.parent = parent
+        self.user = user
+
+    async def interaction_check(
+        self, interaction: discord.Interaction
+    ) -> bool:
+        if interaction.user == self.user:
+            return True
+        await interaction.response.send_message(
+            f"The command was initiated by {self.user.mention}", ephemeral=True
+        )
+        return False
+
+    async def on_timeout(self):
+        self.choice.set_result(False)
+        self.stop()
+        await edit_response(self.parent, view=None)
+
+    @discord.ui.button(
+        label="Overwrite",
+        style=discord.ButtonStyle.green,
+    )
+    async def overwrite(
+        self, interaction: discord.Interaction, _button: discord.ui.Button
+    ):
+        self.choice.set_result(True)
+        self.stop()
+        await interaction.response.defer()
+
+    @discord.ui.button(
+        label="Cancel",
+        style=discord.ButtonStyle.red,
+    )
+    async def cancel(
+        self, interaction: discord.Interaction, _button: discord.ui.Button
+    ):
+        self.choice.set_result(False)
+        self.stop()
+        await interaction.response.defer()
+
+
+def get_add_pack_overwrite_handler(
+    command_interaction: discord.Interaction,
+    loop: asyncio.AbstractEventLoop,
+):
+    async def async_helper(
+        new: SimfilePack, old: SimfilePack, interaction: discord.Interaction
+    ):
+        view = OverwriteView(interaction.user, parent=command_interaction)
+        await interaction.edit_original_response(
+            embed=overwrite_pack_embed(new, old),
+            view=view,
+        )
+        return await view.choice
+
+    def pack_overwrite_handler(new: SimfilePack, old: SimfilePack) -> bool:
+        return asyncio.run_coroutine_threadsafe(
+            async_helper(new, old, command_interaction), loop
+        ).result()
+
+    return pack_overwrite_handler
+
+
+def get_add_song_overwrite_handler(
+    inter_or_msg: discord.Interaction | discord.Message,
+    user: discord.User,
+    loop: asyncio.AbstractEventLoop,
+):
+    async def async_helper(
+        new: Simfile,
+        old: Simfile,
+        inter_or_msg: discord.Interaction | discord.Message,
+    ):
+        view = OverwriteView(user, parent=inter_or_msg)
+        await edit_response(
+            inter_or_msg,
+            embed=overwrite_song_embed(new, old),
+            view=view,
+        )
+        return await view.choice
+
+    def song_overwrite_handler(
+        new: tuple[Simfile, str], old: tuple[Simfile, str]
+    ) -> bool:
+        return asyncio.run_coroutine_threadsafe(
+            async_helper(new[0], old[0], inter_or_msg), loop
+        ).result()
+
+    return song_overwrite_handler
+
 
 # Thread pools for performing add-song and add-pack operations.
 # itg-cli wasn't built with concurrency in mind, so max_workers=1 (i.e. add_song
 # and add_pack operations are handled in a queue)
 ADD_SONG_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 ADD_PACK_EXECUTOR = ThreadPoolExecutor(max_workers=1)
-
-
-def get_add_pack_overwrite_handler(
-    inter: discord.Interaction, loop: asyncio.AbstractEventLoop
-):
-    def overwrite_handler(_new: SimfilePack, _old: SimfilePack) -> bool:
-        asyncio.run_coroutine_threadsafe(
-            inter.edit_original_response(
-                content="Pack already exists. Aborting.", embed=None
-            ),
-            loop,
-        )
-        return False
-
-    return overwrite_handler
-
-
-def get_add_song_overwrite_handler(
-    inter_or_msg: discord.Interaction | discord.Message,
-    loop: asyncio.AbstractEventLoop,
-):
-    def overwrite_handler(
-        _new: tuple[Simfile, str], _old: tuple[Simfile, str]
-    ) -> bool:
-        asyncio.run_coroutine_threadsafe(
-            edit_response(
-                inter_or_msg,
-                content="Song already exists. Aborting.",
-                embed=None,
-            ),
-            loop,
-        )
-        return False
-
-    return overwrite_handler
 
 
 # Async wrapper around itg_cli.add_song
@@ -319,7 +396,7 @@ class ItgCliStdOutHandler(TextIOBase):
         now = time.time()
         # Post an update only if
         #   It's been at least 1 second since our last update
-        #   Our string contains 1-3 digits followed by %
+        #   Our buffer contains a percent (1-3 digits followed by %)
         if 1 + self.last_updated < now and re.search(
             r"[0-9]{1,3}%", self.buffer
         ):
@@ -358,6 +435,30 @@ def progress_embed(progress_text: str) -> discord.Embed:
         description=f"```{progress_text}```",
         color=CALIFORNIA_GOLD,
         timestamp=datetime.datetime.fromtimestamp(time.time()),
+    )
+
+
+def overwrite_song_embed(
+    _new_simfile: Simfile, _old_simfile: Simfile
+) -> discord.Embed:
+    embed = discord.Embed(
+        title="Overwrite existing song?", color=CALIFORNIA_GOLD
+    )
+    return embed
+
+
+def overwrite_pack_embed(_new_pack, _old_pack) -> discord.Embed:
+    embed = discord.Embed(
+        title="Overwrite existing pack?", color=CALIFORNIA_GOLD
+    )
+    return embed
+
+
+def cancelled_embed() -> discord.Embed:
+    return discord.Embed(
+        title="Overwrite Cancelled",
+        description="Keeping original item.",
+        color=discord.Color.red(),
     )
 
 
@@ -419,17 +520,14 @@ def add_pack_success(
     simfile_list = ""
     for i, line in enumerate(simfile_strings):
         if len(simfile_list) + len(line) > 1000:  # Real limit is 1024
-            simfile_list = (
-                simfile_list + f"And {len(simfile_strings) - i} more..."
-            )
+            simfile_list += f"And {len(simfile_strings) - i} more..."
             break
         else:
             simfile_list += f"{line}\n"
-
     embed.add_field(
-        name=f"Contains {len(simfile_strings)} songs", value=simfile_list
+        name=f"Contains {len(simfile_strings)} songs",
+        value=simfile_list,
     )
-
     if pack.banner():
         banner_name = Path(pack.banner()).name
         embed.set_image(url=f"attachment://{banner_name}")
