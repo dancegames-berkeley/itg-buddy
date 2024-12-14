@@ -48,7 +48,8 @@ class ItgCliCog(commands.Cog):
         inter: discord.Interaction,
         link: str,
     ):
-        # Start by deferring the interaction
+        self.logger.info(f"{inter.user} executed add_pack with link {link}")
+
         await inter.response.defer(thinking=True)
 
         # Run add_pack and handle exceptions accordingly
@@ -85,6 +86,8 @@ class ItgCliCog(commands.Cog):
         inter: discord.Interaction,
         link: str,
     ):
+        self.logger.info(f"{inter.user} executed add_song with link {link}")
+
         await self._add_song_helper(inter, link)
 
     @commands.Cog.listener()
@@ -95,6 +98,9 @@ class ItgCliCog(commands.Cog):
             lambda a: a.content_type == "application/zip", msg.attachments
         )
         for zip in zips:
+            self.logger.info(
+                f"{msg.author} executed add_song with link {zip.url}"
+            )
             await self._add_song_helper(msg, zip.url)
 
     async def _add_song_helper(
