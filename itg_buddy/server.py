@@ -3,10 +3,7 @@ from dotenv import load_dotenv
 import logging
 import discord
 from itg_buddy.extensions.example import ExampleCog
-from itg_buddy.extensions.itg_cli import (
-    ItgCliCog,
-    ItgCliCogConfigError,
-)
+from itg_buddy.extensions.itg_cli import ItgCliCog, ItgCliCogConfigError
 from discord.ext import commands
 
 
