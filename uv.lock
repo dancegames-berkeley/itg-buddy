@@ -279,13 +279,13 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "discord-py", specifier = ">=2.4.0" },
-    { name = "itg-cli", specifier = ">=1.0.0" },
+    { name = "itg-cli", specifier = ">=1.0.3" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
 ]
 
 [[package]]
 name = "itg-cli"
-version = "1.0.0"
+version = "1.0.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "gdown" },
@@ -294,9 +294,9 @@ dependencies = [
     { name = "tomlkit" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e9/77/fbd226caef76d85c89627058cfa82008068ade4797411ebd0cae742c0d20/itg_cli-1.0.0.tar.gz", hash = "sha256:1f95d1a69806ae03a3d5fc14cd5b42bc6b507d70cbfa0bbc79c542b3fe558c41", size = 14395 }
+sdist = { url = "https://files.pythonhosted.org/packages/05/12/06e99041ad796d0b074f72e08da1b7e2ff0d0ab551d0c981440a7bbc32e6/itg_cli-1.0.3.tar.gz", hash = "sha256:c7ad90a64123cb31aea794d308e5bdbfefc78a472d02fb3e469a7d83a124213c", size = 15018 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5f/91/4c7932bcdfc365791edd096db4ff0cdf6207f76b37de45d53e2f36970059/itg_cli-1.0.0-py3-none-any.whl", hash = "sha256:f383827f341f364b93e00922cd670355964865339589c66dd8c63b4263d784a2", size = 14201 },
+    { url = "https://files.pythonhosted.org/packages/e8/7d/ef9ec3ebfead9fec9fdbd04e6b2dad2c3fde5edcb32337c8e12b8eb90904/itg_cli-1.0.3-py3-none-any.whl", hash = "sha256:371101960a870a6128b76e563547ba7e6d94f5786f0d5d245eb54d332ee5d034", size = 15076 },
 ]
 
 [[package]]
