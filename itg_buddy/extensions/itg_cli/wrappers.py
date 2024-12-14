@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from simfile.types import Simfile
 
-from itg_buddy.extensions.itg_cli.itg_cli import edit_response_with_stderr
 from itg_buddy.extensions.itg_cli.embeds import progress_embed
 from itg_buddy.extensions.itg_cli.utils import edit_response
 
