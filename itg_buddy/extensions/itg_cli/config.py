@@ -47,5 +47,5 @@ class ItgCliCogConfig:
                 env_bindings["SINGLES_FOLDER_NAME"]
             ),
             Path(env_bindings["ITGMANIA_CACHE_PATH"]),
-            env_bindings["ADD_SONG_CHANNEL_ID"],
+            int(env_bindings["ADD_SONG_CHANNEL_ID"]),
         )
