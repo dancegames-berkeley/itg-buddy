@@ -4,7 +4,7 @@ import discord
 import itg_cli
 import logging
 from discord.ext import commands
-from discord import app_commands
+from discord import Interaction, app_commands
 
 from itg_buddy.extensions.itg_cli.config import ItgCliCogConfig
 from itg_buddy.extensions.itg_cli.embeds import (
@@ -78,10 +78,10 @@ class ItgCliCog(commands.Cog):
 
     @add_pack.error
     async def add_pack_error(
-        self, ctx: commands.Context, error: commands.CommandError
+        self, interaction: Interaction, error: commands.CommandError
     ):
         self.logger.exception(f"add_pack threw an exception")
-        await ctx.interaction.edit_original_response(
+        await interaction.edit_original_response(
             embed=error_embed(sys.exc_info()), view=None
         )
 
@@ -98,10 +98,10 @@ class ItgCliCog(commands.Cog):
 
     @add_song.error
     async def add_song_error(
-        self, ctx: commands.Context, error: commands.CommandError
+        self, interaction: Interaction, error: commands.CommandError
     ):
         self.logger.exception(f"add_song threw an exception")
-        await ctx.interaction.edit_original_response(
+        await interaction.edit_original_response(
             embed=error_embed(sys.exc_info()), view=None
         )
 
