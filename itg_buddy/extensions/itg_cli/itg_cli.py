@@ -82,7 +82,7 @@ class ItgCliCog(commands.Cog):
     ):
         self.logger.exception(f"add_pack threw an exception")
         await interaction.edit_original_response(
-            embed=error_embed(sys.exc_info()), view=None
+            embed=error_embed(sys.exception()), view=None
         )
 
     @app_commands.command(description="Add a song to Berkeley Test Bench.")
@@ -102,7 +102,7 @@ class ItgCliCog(commands.Cog):
     ):
         self.logger.exception(f"add_song threw an exception")
         await interaction.edit_original_response(
-            embed=error_embed(sys.exc_info()), view=None
+            embed=error_embed(sys.exception()), view=None
         )
 
     @commands.Cog.listener()
